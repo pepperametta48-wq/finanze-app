@@ -30,6 +30,7 @@ st.markdown("""
 # --- CONNESSIONE DATI ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# La cache legge i dati e li tiene in memoria.
 @st.cache_data(ttl=5)
 def get_data(worksheet):
     df = conn.read(worksheet=worksheet)
@@ -41,7 +42,7 @@ try:
     df_wishlist = get_data("Wishlist")
     df_abbonamenti = get_data("Abbonamenti")
 except Exception as e:
-    st.error("Errore di connessione. Assicurati che i fogli: Movimenti, Conti, Wishlist, Abbonamenti esistano.")
+    st.error("Errore di connessione. Assicurati che su Google Sheets esistano questi 4 fogli con i nomi esatti: Movimenti, Conti, Wishlist, Abbonamenti.")
     st.stop()
 
 # --- CALCOLO SALDI GLOBALI ---
@@ -76,14 +77,13 @@ if sezione == "Dashboard 📊":
     </div>
     """, unsafe_allow_html=True)
 
-    # Grafici
+    # Grafici Plotly
     st.subheader("Analisi Spese")
     if not df_movimenti.empty:
         uscite_df = df_movimenti[df_movimenti['Tipo'] == 'Uscita'].copy()
         uscite_df['Importo'] = pd.to_numeric(uscite_df['Importo'])
         
         if not uscite_df.empty:
-            # Grafico a ciambella
             fig = px.pie(uscite_df, values='Importo', names='Categoria', hole=0.4, 
                          color_discrete_sequence=px.colors.qualitative.Pastel)
             fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300)
@@ -91,6 +91,7 @@ if sezione == "Dashboard 📊":
         else:
             st.info("Nessuna uscita registrata per generare il grafico.")
 
+    # Lista degli ultimi 5 movimenti stile "App Bancaria"
     st.subheader("Ultimi Movimenti")
     if not df_movimenti.empty:
         ultimi = df_movimenti.tail(5).iloc[::-1]
@@ -113,19 +114,24 @@ if sezione == "Dashboard 📊":
 # ==========================================
 elif sezione == "Nuovo Movimento 💸":
     st.title("Aggiungi Transazione")
-    with st.form("form_movimenti", clear_on_submit=True):
-        tipo = st.selectbox("Tipo", ["Uscita", "Entrata"])
-        importo = st.number_input("Importo (€)", min_value=0.01, format="%.2f")
-        conto = st.selectbox("Conto", df_conti['Nome'].tolist())
-        categoria = st.selectbox("Categoria", ["Spesa", "Casa", "Svago", "Auto", "Stipendio", "Risparmio", "Altro"])
-        descrizione = st.text_input("Descrizione")
-        
-        if st.form_submit_button("Registra"):
-            nuova_riga = pd.DataFrame([{"Data": datetime.now().strftime("%Y-%m-%d"), "Conto": conto, "Tipo": tipo, "Categoria": categoria, "Importo": importo, "Descrizione": descrizione}])
-            df_aggiornato = pd.concat([df_movimenti, nuova_riga], ignore_index=True)
-            conn.update(worksheet="Movimenti", data=df_aggiornato)
-            st.success("Transazione salvata!")
-            st.rerun()
+    if df_conti.empty:
+        st.warning("⚠️ Vai nella sezione 'I Miei Conti' e crea almeno un conto prima di registrare movimenti.")
+    else:
+        with st.form("form_movimenti", clear_on_submit=True):
+            tipo = st.selectbox("Tipo", ["Uscita", "Entrata"])
+            importo = st.number_input("Importo (€)", min_value=0.01, format="%.2f")
+            conto = st.selectbox("Conto", df_conti['Nome'].tolist())
+            categoria = st.selectbox("Categoria", ["Spesa", "Casa", "Svago", "Auto", "Stipendio", "Risparmio", "Altro"])
+            descrizione = st.text_input("Descrizione")
+            
+            if st.form_submit_button("Registra"):
+                nuova_riga = pd.DataFrame([{"Data": datetime.now().strftime("%Y-%m-%d"), "Conto": conto, "Tipo": tipo, "Categoria": categoria, "Importo": importo, "Descrizione": descrizione}])
+                df_aggiornato = pd.concat([df_movimenti, nuova_riga], ignore_index=True)
+                conn.update(worksheet="Movimenti", data=df_aggiornato)
+                
+                st.success("Transazione salvata!")
+                st.cache_data.clear() # Fix per l'aggiornamento istantaneo
+                st.rerun()
 
 # ==========================================
 # 3. I MIEI CONTI
@@ -143,11 +149,17 @@ elif sezione == "I Miei Conti 🏦":
     st.divider()
     with st.form("form_conti"):
         st.write("Aggiungi un nuovo conto")
-        nome = st.text_input("Nome Conto")
+        nome = st.text_input("Nome Conto (es. Revolut)")
         saldo = st.number_input("Saldo Iniziale", min_value=0.0, format="%.2f")
         tesoretto = st.number_input("Tesoretto Intoccabile", min_value=0.0, format="%.2f")
+        
         if st.form_submit_button("Crea"):
-            conn.update(worksheet="Conti", data=pd.concat([df_conti, pd.DataFrame([{"Nome": nome, "Saldo_Iniziale": saldo, "Tesoretto": tesoretto}])], ignore_index=True))
+            nuovo_conto = pd.DataFrame([{"Nome": nome, "Saldo_Iniziale": saldo, "Tesoretto": tesoretto}])
+            df_aggiornato = pd.concat([df_conti, nuovo_conto], ignore_index=True)
+            conn.update(worksheet="Conti", data=df_aggiornato)
+            
+            st.success("Conto creato!")
+            st.cache_data.clear() # Fix per l'aggiornamento istantaneo
             st.rerun()
 
 # ==========================================
@@ -175,8 +187,14 @@ elif sezione == "Abbonamenti 🔁":
         costo = st.number_input("Costo Mensile", min_value=0.01, format="%.2f")
         categoria = st.selectbox("Categoria", ["Svago", "Casa", "Lavoro", "Altro"])
         rinnovo = st.text_input("Giorno del mese (es. 15)")
+        
         if st.form_submit_button("Aggiungi"):
-            conn.update(worksheet="Abbonamenti", data=pd.concat([df_abbonamenti, pd.DataFrame([{"Nome": nome, "Costo_Mensile": costo, "Categoria": categoria, "Data_Rinnovo": rinnovo}])], ignore_index=True))
+            nuovo_abb = pd.DataFrame([{"Nome": nome, "Costo_Mensile": costo, "Categoria": categoria, "Data_Rinnovo": rinnovo}])
+            df_aggiornato = pd.concat([df_abbonamenti, nuovo_abb], ignore_index=True)
+            conn.update(worksheet="Abbonamenti", data=df_aggiornato)
+            
+            st.success("Abbonamento aggiunto!")
+            st.cache_data.clear() # Fix per l'aggiornamento istantaneo
             st.rerun()
 
 # ==========================================
@@ -184,44 +202,55 @@ elif sezione == "Abbonamenti 🔁":
 # ==========================================
 elif sezione == "Wishlist 🎁":
     st.title("Lista dei Desideri")
-    conto_risparmio = st.selectbox("Da quale conto paghi?", df_conti['Nome'].tolist())
     
-    if conto_risparmio in saldature_conti:
-        disponibile = saldature_conti[conto_risparmio]['saldo'] - saldature_conti[conto_risparmio]['tesoretto']
-        st.info(f"Budget Extra (oltre il tesoretto): **{disponibile:.2f} €**")
+    if df_conti.empty:
+        st.warning("Crea un conto prima di poter gestire la wishlist.")
+    else:
+        conto_risparmio = st.selectbox("Da quale conto paghi?", df_conti['Nome'].tolist())
         
-        if not df_wishlist.empty:
-            da_comprare = df_wishlist[df_wishlist['Stato'] == 'Da comprare']
+        if conto_risparmio in saldature_conti:
+            disponibile = saldature_conti[conto_risparmio]['saldo'] - saldature_conti[conto_risparmio]['tesoretto']
+            st.info(f"Budget Extra (oltre il tesoretto): **{disponibile:.2f} €**")
             
-            for idx, row in da_comprare.iterrows():
-                costo = pd.to_numeric(row['Costo'])
-                puo_permettersi = costo <= disponibile
+            if not df_wishlist.empty:
+                da_comprare = df_wishlist[df_wishlist['Stato'] == 'Da comprare']
                 
-                col1, col2 = st.columns([3, 1])
-                col1.markdown(f"**{row['Oggetto']}** ({costo:.2f} €)")
-                
-                if puo_permettersi:
-                    col1.success("✨ Puoi permettertelo!")
-                    # Bottone per comprare e scalare i soldi
-                    if col2.button("Acquista", key=f"buy_{idx}"):
-                        # 1. Cambia stato wishlist
-                        df_wishlist.at[idx, 'Stato'] = 'Acquistato'
-                        conn.update(worksheet="Wishlist", data=df_wishlist)
-                        
-                        # 2. Registra l'uscita automatica
-                        nuova_spesa = pd.DataFrame([{"Data": datetime.now().strftime("%Y-%m-%d"), "Conto": conto_risparmio, "Tipo": "Uscita", "Categoria": "Svago", "Importo": costo, "Descrizione": f"Acquisto Wishlist: {row['Oggetto']}"}])
-                        conn.update(worksheet="Movimenti", data=pd.concat([df_movimenti, nuova_spesa], ignore_index=True))
-                        
-                        st.balloons() # Animazione festeggiamento
-                        st.rerun()
-                else:
-                    col1.error(f"Mancano {costo - disponibile:.2f} €")
+                for idx, row in da_comprare.iterrows():
+                    costo = pd.to_numeric(row['Costo'])
+                    puo_permettersi = costo <= disponibile
                     
-    st.divider()
-    with st.form("form_wishlist"):
-        st.write("Aggiungi Obiettivo")
-        oggetto = st.text_input("Oggetto")
-        costo = st.number_input("Costo", min_value=1.0)
-        if st.form_submit_button("Aggiungi"):
-            conn.update(worksheet="Wishlist", data=pd.concat([df_wishlist, pd.DataFrame([{"Oggetto": oggetto, "Costo": costo, "Stato": "Da comprare"}])], ignore_index=True))
-            st.rerun()
+                    col1, col2 = st.columns([3, 1])
+                    col1.markdown(f"**{row['Oggetto']}** ({costo:.2f} €)")
+                    
+                    if puo_permettersi:
+                        col1.success("✨ Puoi permettertelo!")
+                        # Bottone per comprare e scalare i soldi
+                        if col2.button("Acquista", key=f"buy_{idx}"):
+                            # 1. Cambia stato wishlist
+                            df_wishlist.at[idx, 'Stato'] = 'Acquistato'
+                            conn.update(worksheet="Wishlist", data=df_wishlist)
+                            
+                            # 2. Registra l'uscita
+                            nuova_spesa = pd.DataFrame([{"Data": datetime.now().strftime("%Y-%m-%d"), "Conto": conto_risparmio, "Tipo": "Uscita", "Categoria": "Svago", "Importo": costo, "Descrizione": f"Acquisto Wishlist: {row['Oggetto']}"}])
+                            conn.update(worksheet="Movimenti", data=pd.concat([df_movimenti, nuova_spesa], ignore_index=True))
+                            
+                            st.balloons()
+                            st.cache_data.clear() # Fix per l'aggiornamento istantaneo
+                            st.rerun()
+                    else:
+                        col1.error(f"Mancano {costo - disponibile:.2f} €")
+                        
+        st.divider()
+        with st.form("form_wishlist"):
+            st.write("Aggiungi Obiettivo")
+            oggetto = st.text_input("Oggetto")
+            costo = st.number_input("Costo", min_value=1.0)
+            
+            if st.form_submit_button("Aggiungi"):
+                nuovo_desiderio = pd.DataFrame([{"Oggetto": oggetto, "Costo": costo, "Stato": "Da comprare"}])
+                df_aggiornato = pd.concat([df_wishlist, nuovo_desiderio], ignore_index=True)
+                conn.update(worksheet="Wishlist", data=df_aggiornato)
+                
+                st.success("Aggiunto!")
+                st.cache_data.clear() # Fix per l'aggiornamento istantaneo
+                st.rerun()
